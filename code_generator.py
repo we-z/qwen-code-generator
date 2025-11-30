@@ -71,7 +71,8 @@ class CodeGenerator:
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 262144,
             "temperature": 0.7,
-            "stream": True
+            "stream": True,
+            "n_threads": os.cpu_count() or 4  # Request to use all available cores
         }
         try:
             logger.info("Calling LLM API with streaming enabled...")
@@ -82,6 +83,13 @@ class CodeGenerator:
             print(f"\n{'='*80}")
             print("LLM Response (streaming):")
             print(f"{'='*80}")
+            
+            start_time = time.time()
+            token_count = 0
+            current_line_buffer = ""
+            
+            # Print initial TPS for the first line
+            print(f"[TPS: 0.00] ", end='', flush=True)
             
             for line in response.iter_lines():
                 if line:
@@ -96,13 +104,40 @@ class CodeGenerator:
                                 delta = data['choices'][0].get('delta', {})
                                 content = delta.get('content', '')
                                 if content:
-                                    print(content, end='', flush=True)
+                                    token_count += 1
+                                    elapsed = time.time() - start_time
+                                    tps = token_count / elapsed if elapsed > 0 else 0
+                                    
                                     full_content += content
+                                    
+                                    # Handle line buffering and printing
+                                    if '\n' in content:
+                                        parts = content.split('\n')
+                                        # Print the first part (completing the current line)
+                                        print(parts[0])
+                                        
+                                        # Handle middle parts (full lines)
+                                        for part in parts[1:-1]:
+                                            print(f"[TPS: {tps:.2f}] {part}")
+                                            
+                                        # Handle the last part (start of next line)
+                                        print(f"[TPS: {tps:.2f}] {parts[-1]}", end='', flush=True)
+                                        current_line_buffer = parts[-1]
+                                    else:
+                                        print(content, end='', flush=True)
+                                        current_line_buffer += content
+                                        
                         except json.JSONDecodeError:
                             continue
             
+            # Ensure the last line is terminated if needed
+            if current_line_buffer:
+                print() 
+            
             print(f"\n{'='*80}\n")
-            logger.info(f"LLM returned {len(full_content)} characters")
+            total_elapsed = time.time() - start_time
+            final_tps = token_count / total_elapsed if total_elapsed > 0 else 0
+            logger.info(f"LLM returned {len(full_content)} characters. Avg TPS: {final_tps:.2f}")
             return full_content
         except Exception as e:
             logger.error(f"LLM Call failed: {e}")
